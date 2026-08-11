@@ -9,8 +9,8 @@ Notion 存取權杖存在 Streamlit 的 Secrets，瀏覽器端看不到，安全
 
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime
-from notion_client import Client
 
 # ---------------------------------------------------------------------------
 # 固定資料庫 ID（這些是公開的識別碼，不是機密，可以放在程式碼裡）
@@ -23,32 +23,41 @@ DB_MEETINGS    = "d36e85f4c91448bf86c06dfcc2993f25"   # 會議紀錄
 DB_DECISIONS   = "def438b2b4ba418a92ad3262970616b6"   # 決策紀錄
 DB_KPI         = "c281849c660b4e8b8bcb22413b118dab"   # KPI 追蹤
 
+NOTION_API = "https://api.notion.com/v1"
+
 st.set_page_config(page_title="AI OS · CEO Dashboard", page_icon="🧠", layout="wide")
 
 # ---------------------------------------------------------------------------
-# Notion 連線
+# Notion 連線（直接打 REST API，避免 SDK 版本差異造成的相容性問題）
 # ---------------------------------------------------------------------------
-@st.cache_resource
-def get_client():
+def get_headers():
     token = st.secrets.get("NOTION_TOKEN")
     if not token:
         st.error("找不到 NOTION_TOKEN，請到 Streamlit App 的 Settings → Secrets 設定。")
         st.stop()
-    return Client(auth=token, notion_version="2022-06-28")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
 
 
 @st.cache_data(ttl=60, show_spinner="正在向 Notion 取得最新資料...")
 def query_db(db_id: str):
     """回傳資料庫所有列（已攤平成 dict list）"""
-    client = get_client()
+    headers = get_headers()
     results, cursor = [], None
     while True:
-        resp = client.databases.query(database_id=db_id, start_cursor=cursor) if cursor \
-            else client.databases.query(database_id=db_id)
-        results.extend(resp["results"])
-        if not resp.get("has_more"):
+        payload = {"start_cursor": cursor} if cursor else {}
+        resp = requests.post(f"{NOTION_API}/databases/{db_id}/query", headers=headers, json=payload, timeout=30)
+        if not resp.ok:
+            st.error(f"Notion API 錯誤（{resp.status_code}）：{resp.text[:500]}")
+            st.stop()
+        data = resp.json()
+        results.extend(data["results"])
+        if not data.get("has_more"):
             break
-        cursor = resp.get("next_cursor")
+        cursor = data.get("next_cursor")
     return [flatten(p) for p in results]
 
 
