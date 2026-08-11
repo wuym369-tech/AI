@@ -4,6 +4,7 @@ AI OS · CEO Dashboard (Streamlit + Notion 即時版)
 每次打開這個網頁，都會即時去 Notion 抓最新資料再畫出來。
 Notion 存取權杖存在 Streamlit 的 Secrets，瀏覽器端看不到，安全。
 
+視覺風格沿用原本那份深色 HTML Dashboard 的設計語言。
 部署方式請見 DEPLOY_GUIDE.md。
 """
 
@@ -26,6 +27,107 @@ DB_KPI         = "c281849c660b4e8b8bcb22413b118dab"   # KPI 追蹤
 NOTION_API = "https://api.notion.com/v1"
 
 st.set_page_config(page_title="AI OS · CEO Dashboard", page_icon="🧠", layout="wide")
+
+# ---------------------------------------------------------------------------
+# 視覺風格：沿用原本 HTML 版本的深色配色
+# ---------------------------------------------------------------------------
+PALETTE = {
+    "bg": "#0E1016", "panel": "#181B25", "panel2": "#1D202B", "line": "#262A38",
+    "text": "#E7E8EE", "text_soft": "#9296A8", "text_faint": "#5C6072",
+    "grad1": "#6C5CE7", "grad2": "#4FD1E8",
+    "green": "#3ECF8E", "green_soft": "rgba(62,207,142,.12)",
+    "amber": "#F5B84D", "amber_soft": "rgba(245,184,77,.12)",
+    "grey": "#4A4E5C", "grey_soft": "rgba(255,255,255,.05)",
+    "red": "#F56B6B", "red_soft": "rgba(245,107,107,.12)",
+}
+
+STATUS_COLOR = {
+    "完成": ("green", "green_soft"), "已建立": ("green", "green_soft"), "達標": ("green", "green_soft"),
+    "進行中": ("amber", "amber_soft"), "待優化": ("amber", "amber_soft"),
+    "待補充": ("grey", "grey_soft"), "未開始": ("grey", "grey_soft"), "已封存": ("grey", "grey_soft"),
+    "落後": ("red", "red_soft"),
+}
+
+
+def inject_css():
+    st.markdown(f"""
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      html, body, [class*="css"] {{
+        font-family: 'Inter','Noto Sans TC',sans-serif;
+      }}
+      .stApp {{ background: {PALETTE['bg']}; color: {PALETTE['text']}; }}
+      section[data-testid="stSidebar"] {{
+        background: #12141C; border-right: 1px solid {PALETTE['line']};
+      }}
+      .aios-brand {{ display:flex; align-items:center; gap:10px; padding:6px 4px 18px; }}
+      .aios-logo {{
+        width:32px; height:32px; border-radius:9px; flex-shrink:0;
+        background: conic-gradient(from 180deg, {PALETTE['grad1']}, {PALETTE['grad2']}, {PALETTE['grad1']});
+      }}
+      .aios-brand .name {{ font-weight:700; font-size:15px; color:{PALETTE['text']}; }}
+      .aios-brand .tag {{ font-size:10px; color:{PALETTE['text_faint']}; }}
+
+      div[data-testid="stMetric"] {{
+        background: {PALETTE['panel']}; border: 1px solid {PALETTE['line']};
+        border-radius: 14px; padding: 14px 18px;
+      }}
+      div[data-testid="stMetricLabel"] {{ color: {PALETTE['text_soft']}; }}
+      div[data-testid="stMetricValue"] {{ color: {PALETTE['text']}; }}
+
+      .aios-panel {{
+        background: {PALETTE['panel']}; border: 1px solid {PALETTE['line']};
+        border-radius: 14px; padding: 18px 20px; margin-bottom: 16px;
+      }}
+      .aios-panel h3 {{ font-size:14px; font-weight:700; margin:0 0 12px; color:{PALETTE['text']}; }}
+      .aios-panel h3 .hint {{ font-size:11px; color:{PALETTE['text_faint']}; font-weight:400; margin-left:6px; }}
+
+      .aios-row {{
+        display:flex; align-items:center; gap:12px; padding:8px 0;
+        border-bottom:1px solid {PALETTE['grey_soft']}; font-size:13px;
+      }}
+      .aios-row:last-child {{ border-bottom:none; }}
+      .aios-row .label {{ flex:1; color:{PALETTE['text']}; }}
+      .aios-row .sub {{ color:{PALETTE['text_faint']}; font-size:11.5px; }}
+
+      .aios-track {{ flex:2; height:7px; background:{PALETTE['grey_soft']}; border-radius:6px; overflow:hidden; }}
+      .aios-fill {{ height:100%; border-radius:6px; }}
+
+      .aios-pill {{
+        font-size:10.5px; padding:3px 10px; border-radius:20px; font-weight:600;
+        white-space:nowrap;
+      }}
+
+      div[data-testid="stDataFrame"] {{
+        background: {PALETTE['panel']}; border-radius: 12px; border: 1px solid {PALETTE['line']};
+      }}
+
+      .stRadio > label {{ color: {PALETTE['text_soft']}; }}
+      section[data-testid="stSidebar"] .stButton button {{
+        background: {PALETTE['panel2']}; color: {PALETTE['text']}; border: 1px solid {PALETTE['line']};
+        border-radius: 9px;
+      }}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def status_pill(status: str) -> str:
+    if not status:
+        status = "待補充"
+    color_key, bg_key = STATUS_COLOR.get(status, ("grey", "grey_soft"))
+    return (f'<span class="aios-pill" style="color:{PALETTE[color_key]};'
+            f'background:{PALETTE[bg_key]}">{status}</span>')
+
+
+def panel_open(title: str, hint: str = ""):
+    hint_html = f'<span class="hint">{hint}</span>' if hint else ""
+    st.markdown(f'<div class="aios-panel"><h3>{title}{hint_html}</h3>', unsafe_allow_html=True)
+
+
+def panel_close():
+    st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ---------------------------------------------------------------------------
 # Notion 連線（直接打 REST API，避免 SDK 版本差異造成的相容性問題）
@@ -110,6 +212,8 @@ def resolve_relation(ids, mapping):
 # ---------------------------------------------------------------------------
 # 讀資料
 # ---------------------------------------------------------------------------
+inject_css()
+
 depts   = query_db(DB_DEPARTMENTS)
 units   = query_db(DB_UNITS)
 todos   = query_db(DB_TODOS)
@@ -135,7 +239,11 @@ for r in kpis:
 # ---------------------------------------------------------------------------
 # 側邊欄
 # ---------------------------------------------------------------------------
-st.sidebar.markdown("## 🧠 AI OS\n我的第二大腦與企業系統")
+st.sidebar.markdown(
+    '<div class="aios-brand"><div class="aios-logo"></div>'
+    '<div><div class="name">AI OS</div><div class="tag">我的第二大腦與企業系統</div></div></div>',
+    unsafe_allow_html=True,
+)
 if st.sidebar.button("🔄 重新整理（清快取，立即抓最新）"):
     st.cache_data.clear()
     st.rerun()
@@ -148,11 +256,44 @@ page = st.sidebar.radio(
 )
 
 # ---------------------------------------------------------------------------
+# 小元件：部門進度條 / 狀態列表
+# ---------------------------------------------------------------------------
+def dept_progress_panel():
+    panel_open("部門狀態", "依實際填寫內容")
+    order = {"待補充": 0, "進行中": 60, "完成": 100}
+    color_map = {"待補充": PALETTE["grey"], "進行中": PALETTE["amber"], "完成": PALETTE["green"]}
+    for d in depts:
+        status = d.get("狀態") or "待補充"
+        pct = order.get(status, 0)
+        color = color_map.get(status, PALETTE["grey"])
+        st.markdown(f"""
+        <div class="aios-row">
+          <span class="label" style="flex:0 0 90px;">{d.get('部門','')}</span>
+          <div class="aios-track"><div class="aios-fill" style="width:{pct}%;background:{color}"></div></div>
+          {status_pill(status)}
+        </div>
+        """, unsafe_allow_html=True)
+    panel_close()
+
+
+def list_panel(title, rows, line_fn, hint="", empty_text="尚無資料"):
+    panel_open(title, hint)
+    if not rows:
+        st.markdown(f'<div style="color:{PALETTE["text_faint"]};font-size:12.5px;padding:8px 0;">{empty_text}</div>',
+                     unsafe_allow_html=True)
+    else:
+        for r in rows:
+            st.markdown(line_fn(r), unsafe_allow_html=True)
+    panel_close()
+
+
+# ---------------------------------------------------------------------------
 # Dashboard 頁
 # ---------------------------------------------------------------------------
 def dashboard():
-    st.title("早安 🌿")
-    st.caption("這裡是目前 Notion 真實資料的即時總覽。")
+    st.markdown(f"<h1 style='margin-bottom:2px'>早安 🌿</h1>", unsafe_allow_html=True)
+    st.markdown(f"<p style='color:{PALETTE['text_soft']};font-size:13px;margin-bottom:22px'>"
+                f"這裡是目前 Notion 真實資料的即時總覽。</p>", unsafe_allow_html=True)
 
     depts_filled = sum(1 for d in depts if d.get("狀態") not in (None, "待補充"))
     units_filled = sum(1 for u in units if u.get("狀態") not in (None, "待補充"))
@@ -164,45 +305,50 @@ def dashboard():
     c3.metric("SOP 項目數", len(sops))
     c4.metric("待辦事項（未完成）", open_todos)
 
-    st.divider()
+    st.write("")
     left, right = st.columns([1.5, 1])
 
     with left:
-        st.subheader("部門狀態")
-        if depts:
-            st.dataframe(pd.DataFrame(depts)[["部門", "狀態"]], hide_index=True, use_container_width=True)
-        st.subheader("本週 SOP（依星期排序）")
-        if sops:
-            order = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7}
-            df = pd.DataFrame(sops)
-            df["_順序"] = df["星期"].map(order)
-            df = df.sort_values("_順序")
-            st.dataframe(df[["星期", "項目名稱", "部門", "狀態"]], hide_index=True, use_container_width=True)
-        else:
-            st.info("尚無 SOP 資料")
+        dept_progress_panel()
+
+        order = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7}
+        sorted_sops = sorted(sops, key=lambda r: order.get(r.get("星期"), 9))
+        list_panel(
+            "本週 SOP", sorted_sops,
+            lambda r: f"""<div class="aios-row">
+                <span style="flex:0 0 24px;color:{PALETTE['text_faint']}">{r.get('星期','')}</span>
+                <span class="label">{r.get('項目名稱','')}<span class="sub"> · {r.get('部門','')}</span></span>
+                {status_pill(r.get('狀態'))}
+              </div>""",
+            hint="依星期排序", empty_text="尚無 SOP 資料",
+        )
 
     with right:
-        st.subheader("公司代辦事項")
-        if todos:
-            df = pd.DataFrame(todos)
-            cols = [c for c in ["任務名稱", "狀態", "截止時間", "負責人"] if c in df.columns]
-            st.dataframe(df[cols], hide_index=True, use_container_width=True)
-        else:
-            st.info("尚無代辦事項")
+        list_panel(
+            "公司代辦事項", todos,
+            lambda r: f"""<div class="aios-row">
+                <span class="label">{r.get('任務名稱','')}<span class="sub"> · {r.get('負責人') or '未指派'}</span></span>
+                {status_pill(r.get('狀態'))}
+              </div>""",
+            empty_text="尚無代辦事項",
+        )
 
-        st.subheader("最近會議")
-        if meets:
-            df = pd.DataFrame(meets).sort_values("日期", ascending=False, na_position="last")
-            cols = [c for c in ["標題", "日期", "部門"] if c in df.columns]
-            st.dataframe(df[cols].head(5), hide_index=True, use_container_width=True)
-        else:
-            st.info("尚無會議紀錄")
+        sorted_meets = sorted(meets, key=lambda r: r.get("日期") or "", reverse=True)[:5]
+        list_panel(
+            "最近會議", sorted_meets,
+            lambda r: f"""<div class="aios-row">
+                <span class="label">{r.get('標題','')}<span class="sub"> · {r.get('部門','')}</span></span>
+                <span class="sub">{r.get('日期') or ''}</span>
+              </div>""",
+            empty_text="尚無會議紀錄",
+        )
 
 
 def simple_table(rows, title, cols=None):
-    st.title(title)
+    st.markdown(f"<h1>{title}</h1>", unsafe_allow_html=True)
     if not rows:
-        st.info("尚無資料")
+        st.markdown(f'<div style="color:{PALETTE["text_faint"]};padding:20px 0;">尚無資料</div>',
+                     unsafe_allow_html=True)
         return
     df = pd.DataFrame(rows)
     if cols:
