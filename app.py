@@ -16,7 +16,9 @@ Streamlit 的 markdown 解析器會把縮排超過 4 個空白的行當成「程
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, date, timedelta
+import json
+import re
 
 # ---------------------------------------------------------------------------
 # 固定資料庫 ID（這些是公開的識別碼，不是機密，可以放在程式碼裡）
@@ -34,6 +36,7 @@ DB_LIFE_GOALS  = "a77069e3aa214d0b9feedacddb3c6a0e"   # 人生目標（Life OS�
 DB_PROJECTS    = "932b40be8f154bdca8c74c6189af9833"   # 專案管理
 
 NOTION_API = "https://api.notion.com/v1"
+OPENAI_API = "https://api.openai.com/v1/responses"
 
 st.set_page_config(page_title="AI OS · CEO Dashboard", page_icon="🧠", layout="wide")
 
@@ -609,6 +612,7 @@ GOAL_ICONS = {"年度目標": "🎯", "個人成長": "🌱", "健康管理": "�
 NAV = [
     {"group": "AI OS", "items": [
         {"id": "dashboard", "label": "CEO Dashboard", "icon": "🏠"},
+        {"id": "ai_ceo", "label": "AI CEO", "icon": "🧠"},
     ]},
     {"group": "公司營運 OS", "items": [
         {"id": "units", "label": "事業體總覽", "icon": "🏢"},
@@ -777,6 +781,157 @@ def quick_add_panel():
             go_to("units", expand_add=True)
 
 
+
+# ---------------------------------------------------------------------------
+# AI CEO：把 Notion 現況整理成「今天該做什麼」
+# ---------------------------------------------------------------------------
+def _clean_for_ai(rows, fields, limit=30):
+    cleaned = []
+    for r in rows[:limit]:
+        item = {}
+        for f in fields:
+            v = r.get(f)
+            if v not in (None, "", [], {}):
+                item[f] = v
+        if item:
+            cleaned.append(item)
+    return cleaned
+
+
+def _local_ceo_brief():
+    """沒有 OPENAI_API_KEY 時也能工作的規則型 CEO Brief。"""
+    today = date.today()
+    overdue = []
+    due_7 = []
+    for t in todos:
+        status = t.get("狀態")
+        if status in ("完成", "已封存"):
+            continue
+        d = _parse_date(t.get("截止時間"))
+        if d and d < today:
+            overdue.append(t)
+        elif d and d <= today + timedelta(days=7):
+            due_7.append(t)
+    late_kpi = [k for k in kpis if k.get("狀態") == "落後"]
+    risky_projects = [p for p in projects if p.get("進度") in ("暫停",) or (p.get("風險") and str(p.get("風險")).strip())]
+    actions = []
+    if overdue:
+        actions.append(f"先處理 {len(overdue)} 個逾期任務，避免把舊問題帶進下一週。")
+    if late_kpi:
+        actions.append(f"檢查 {len(late_kpi)} 項落後 KPI，找出一個可在本週改善的槓桿。")
+    if risky_projects:
+        actions.append(f"檢查 {len(risky_projects)} 個有風險／暫停中的專案，確認是否需要停止、調整或加資源。")
+    if due_7:
+        actions.append(f"安排未來 7 天內到期的 {len(due_7)} 個任務，避免集中爆量。")
+    if not actions:
+        actions.append("目前沒有明顯紅燈；今天優先推進一件能直接產生收入、客戶或長期資產的事情。")
+    return {
+        "headline": "今天先處理真正會改變結果的事情。",
+        "actions": actions[:3],
+        "overdue": overdue[:8],
+        "due_7": due_7[:8],
+        "late_kpi": late_kpi[:8],
+    }
+
+
+def _build_ai_context():
+    return {
+        "today": str(date.today()),
+        "departments": _clean_for_ai(depts, ["部門", "狀態"], 30),
+        "business_units": _clean_for_ai(units, ["事業體", "狀態", "主要部門"], 30),
+        "tasks": _clean_for_ai(todos, ["任務名稱", "狀態", "截止時間"], 50),
+        "kpis": _clean_for_ai(kpis, ["KPI 名稱", "週期", "目標值", "實際值", "狀態", "部門", "事業體"], 40),
+        "projects": _clean_for_ai(projects, ["專案名稱", "目標", "進度", "預計完成", "風險", "部門", "事業體"], 40),
+        "meetings": _clean_for_ai(meets, ["標題", "日期", "重點摘要", "決議事項"], 20),
+        "decisions": _clean_for_ai(decides, ["決策名稱", "日期", "背景", "決策內容"], 20),
+        "content": _clean_for_ai(content, ["標題", "平台", "內容主題", "發布日期", "狀態"], 30),
+    }
+
+
+def _extract_response_text(data):
+    # Responses API 的常見輸出結構；同時保留相容性處理。
+    if isinstance(data.get("output_text"), str):
+        return data["output_text"]
+    chunks = []
+    for item in data.get("output", []) or []:
+        for c in item.get("content", []) or []:
+            if isinstance(c, dict) and isinstance(c.get("text"), str):
+                chunks.append(c["text"])
+    return "\n".join(chunks).strip()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def ask_ai_ceo(context_json):
+    api_key = st.secrets.get("OPENAI_API_KEY", "")
+    model = st.secrets.get("OPENAI_MODEL", "gpt-5.6")
+    if not api_key:
+        return None
+    system = """你是使用者的 AI CEO。你正在讀取他的企業管理 OS。你的工作不是泛泛而談，而是根據資料找出真正重要的矛盾、風險與槓桿。\n\n請用繁體中文回答，結構固定：\n1. 今日 CEO 判斷：一句話\n2. 最重要的 3 件事：依優先級排序，每件說明原因\n3. 紅燈：列出 KPI、逾期任務、專案風險等真正需要注意的項目\n4. 本週建議：最多 3 個行動\n5. 你需要我決定的事：如果資料不足才提出問題，最多 2 個。\n\n不要虛構資料；如果資料不足，明確說明。"""
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": system}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "以下是今天 AI OS 的即時資料：\n" + context_json}]},
+        ],
+        "max_output_tokens": 1800,
+    }
+    try:
+        resp = requests.post(OPENAI_API, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, json=payload, timeout=90)
+        if not resp.ok:
+            return f"AI API 錯誤（{resp.status_code}）：{resp.text[:500]}"
+        text = _extract_response_text(resp.json())
+        return text or "AI 沒有回傳文字。"
+    except Exception as e:
+        return f"AI 連線失敗：{e}"
+
+
+def ai_ceo_page():
+    hero("AI OS · INTELLIGENCE", "AI CEO", "把 Notion 裡的任務、KPI、專案、會議與決策，轉成今天可以採取的管理行動。")
+    context = _build_ai_context()
+    local = _local_ceo_brief()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("逾期任務", len(local["overdue"]))
+    c2.metric("7 天內到期", len(local["due_7"]))
+    c3.metric("落後 KPI", len(local["late_kpi"]))
+    c4.metric("風險專案", len([p for p in projects if p.get("風險") or p.get("進度") == "暫停"]))
+
+    st.write("")
+    if st.button("🧠 執行 AI CEO 分析", type="primary", use_container_width=True):
+        st.session_state["ai_ceo_result"] = ask_ai_ceo(json.dumps(context, ensure_ascii=False, default=str))
+
+    result = st.session_state.get("ai_ceo_result")
+    if result:
+        with st.container(border=True):
+            st.markdown("### AI CEO 判斷")
+            st.markdown(result)
+    else:
+        st.info("尚未執行 AI 分析。沒有設定 OPENAI_API_KEY 時，系統仍會顯示規則型 CEO Brief。")
+        st.markdown(f"### 今日判斷\n{local['headline']}")
+        for i, action in enumerate(local["actions"], 1):
+            st.markdown(f"**{i}.** {action}")
+
+    left, right = st.columns(2, gap="large")
+    with left:
+        if local["overdue"]:
+            render_panel("🔴 逾期任務", local["overdue"], lambda r: f'<div class="aios-row"><span class="label">{r.get("任務名稱", "未命名")}</span>{status_pill(r.get("狀態"))}</div>')
+        else:
+            render_panel("🔴 逾期任務", [], lambda r: "", empty_text="目前沒有逾期任務。很好，別讓它們復活。")
+    with right:
+        if local["late_kpi"]:
+            render_panel("📉 落後 KPI", local["late_kpi"], lambda r: f'<div class="aios-row"><span class="label">{r.get("KPI 名稱", "未命名")}<span class="sub"> · {r.get("實際值", "未填")}/{r.get("目標值", "未填")}</span></span>{status_pill(r.get("狀態"))}</div>')
+        else:
+            render_panel("📉 落後 KPI", [], lambda r: "", empty_text="目前沒有標記為落後的 KPI。")
+
+    st.markdown("### 快速處理")
+    q1, q2, q3 = st.columns(3)
+    if q1.button("➕ 新增任務", use_container_width=True):
+        go_to("todo", expand_add=True)
+    if q2.button("📈 更新 KPI", use_container_width=True):
+        go_to("kpi", expand_add=True)
+    if q3.button("📁 檢查專案", use_container_width=True):
+        go_to("projects")
+
 # ---------------------------------------------------------------------------
 # Dashboard 頁
 # ---------------------------------------------------------------------------
@@ -885,6 +1040,8 @@ def goals_page(category=None, expand_add=False):
 # ---------------------------------------------------------------------------
 if nav_id == "dashboard":
     dashboard()
+elif nav_id == "ai_ceo":
+    ai_ceo_page()
 elif nav_id == "units":
     simple_table(units, "公司營運 OS", "事業體總覽", ["事業體", "主要部門", "基本資料", "組織架構", "狀態"], form_key="事業體總覽", expand_add=expand_now)
 elif nav_id == "depts":
